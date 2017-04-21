@@ -4,8 +4,29 @@ let hostIPv6 = process.env.UDP_IPV6_6LOWPAN || 'aaaa::1';
 let dgram = require('dgram');
 let serverUDP = dgram.createSocket('udp6');
 let sensorModel = require('./models/ipv6Sensor');
-let disableLogs = true;
+let disableLogs = false;
 let mongo = require('./dbMongo');
+let IS = require('initial-state');
+let bucket = IS.bucket('Sensores ITT Chip', 'n2caJWeGsQOLxX4j4y6xnFogm1rCbn0Q');
+let ignore = false;
+let lastValuesQuery = {
+    "rssi": {
+        "$slice": -1
+    },
+    "temp": {
+        "$slice": -1
+    },
+    "bat": {
+        "$slice": -1
+    },
+    "rota": {
+        "$slice": -1
+    }
+};
+
+bucket.on('error',function(e){
+  console.log(e);
+});
 
 mongo();
 
@@ -20,7 +41,7 @@ serverUDP.bind(portIPv6, hostIPv6);
 
 function processMessage(message, remote) {
     if (!disableLogs)
-        console.log('[ UDP - IPv6] ' + new Date().toISOString() + ' ' + remote.address + ' Port:' + remote.port + ' - ' + message);
+    console.log('[UDP - IPv6] ' + new Date().toISOString() + ' ' + remote.address + ' Port:' + remote.port + ' - ' + message);
     let dataArray = message.toString().split('|');
 
     sensorModel.findOne({
@@ -28,7 +49,7 @@ function processMessage(message, remote) {
     }).exec(function(err, sensor) {
         if (!sensor) {
             let newSensor = new sensorModel();
-            console.log('Sensor 6LoWPAN novo adicionado: '+dataArray[0]);
+            console.log('Sensor 6LoWPAN novo adicionado: ' + dataArray[0]);
             newSensor.alias = 'Sensor 6LoWPAN - ' + dataArray[0];
             newSensor.ipv6addr = remote.address;
             newSensor.save(function(err, sucess) {
@@ -44,83 +65,88 @@ function processMessage(message, remote) {
     });
 }
 
-function updateSensor(sensor, dataArray) {
-    sensorModel.aggregate([{
-        $match: {
-            '_id': sensor._id
-        }
-    }, {
-        $project: {
-            'temp': {
-                $slice: ["$temp.value", -1]
-            },
-            'bat': {
-                $slice: ["$bat.value", -1]
-            },
-            'rssi': {
-                $slice: ["$rssi.value", -1]
+function updateKey(sensorType, sensor, valueNew) {
+    let updateValueQuery;
+
+    switch (sensorType) {
+        case 'temp':
+            updateValueQuery = {
+                $push: {
+                    "temp": {
+                        value: valueNew
+                    }
+                }
+            };
+            break;
+        case 'bat':
+            updateValueQuery = {
+                $push: {
+                    "bat": {
+                        value: valueNew
+                    }
+                }
+            };
+            break;
+        case 'rssi':
+            updateValueQuery = {
+                $push: {
+                    "rssi": {
+                        value: valueNew
+                    }
+                }
+            };
+            break;
+        case 'rota':
+            updateValueQuery = {
+                $push: {
+                    "rota": {
+                        value: valueNew
+                    }
+                }
+            };
+            break;
+        default:
+
+    }
+    sensorModel.findByIdAndUpdate(sensor._id, updateValueQuery).exec(
+        function(err, sensorUpdate) {
+            if (err) {
+                console.log('Erro ao atualizar dados de sensores: ' + err);
+            } else {
+                if (!disableLogs)
+                    console.log('Novo registro de ' + sensorType + ' - ' + valueNew);
             }
-        }
-    }]).exec(function(err, data) {
-        let updatedValue = 0;
-        if (data[0].temp[0] !== dataArray[1]) {
-            updatedValue = 1;
-            sensorModel.findByIdAndUpdate(sensor._id, {
-                    $push: {
-                        "temp": {
-                            value: dataArray[1]
-                        }
-                    }
-                },
-                function(err, sensorUpdate) {
-                    if (err) {
-                        console.log('Erro ao atualizar dados de sensores: ' + err);
-                    } else {
-                        if (!disableLogs)
-                            console.log('Novo registro de temperatura - ' + dataArray[1]);
-                    }
-                });
-        }
-        if (data[0].bat[0] !== dataArray[2]) {
-            updatedValue = 1;
-            sensorModel.findByIdAndUpdate(sensor._id, {
-                    $push: {
-                        "bat": {
-                            value: dataArray[2]
-                        }
-                    }
-                },
-                function(err, sensorUpdate) {
-                    if (err) {
-                        console.log('Erro ao atualizar dados de sensores: ' + err);
-                    } else {
-                        if (!disableLogs)
-                            console.log('Novo registro de bateria - ' + dataArray[2]);
-                    }
-                });
-        }
-        if (data[0].rssi[0] !== dataArray[3]) {
-            updatedValue = 1;
-            sensorModel.findByIdAndUpdate(sensor._id, {
-                    $push: {
-                        "rssi": {
-                            value: dataArray[3]
-                        }
-                    }
-                },
-                function(err, sensorUpdate) {
-                    if (err) {
-                        console.log('Erro ao atualizar dados de sensores: ' + err);
-                    } else {
-                        if (!disableLogs)
-                            console.log('Novo registro de rssi - ' + dataArray[3]);
-                    }
-                });
-        }
-        // if (updatedValue === 1) {
-        sensorModel.findByIdAndUpdate(sensor._id, {
+        });
+}
+
+function updateSensor(sensor, dataArray) {
+    let formatTemp = dataArray[1].split('C');
+    formatTemp = String(parseInt(formatTemp[0])/100)+' C';
+    bucket.push('Temperatura NTC '+dataArray[0],formatTemp);
+    bucket.push('Bateria '+dataArray[0], dataArray[2]);
+
+    sensorModel.findByIdAndUpdate(sensor._id, {
             'updatedAt': new Date()
-        }).exec(function(err, updated) {});
-        // }
-    });
+        })
+        .exec(function(err, updated) {});
+
+    sensorModel.findById(sensor._id)
+        .select(lastValuesQuery)
+        .exec(function(err, sensorLast) {
+            if (!sensorLast.rota.length ||
+                dataArray[4] !== sensorLast.rota[0].value)
+                updateKey("rota", sensorLast, dataArray[4]);
+
+            if (!sensorLast.rssi.length ||
+                dataArray[3] !== sensorLast.rssi[0].value)
+                updateKey("rssi", sensorLast, dataArray[3]);
+
+            if (!sensorLast.bat.length ||
+                dataArray[2] !== sensorLast.temp[0].value)
+                updateKey("bat", sensorLast, dataArray[2]);
+
+            if (!sensorLast.temp.length ||
+                dataArray[1] !== sensorLast.temp[0].value)
+                updateKey("temp", sensorLast, dataArray[1]);
+        });
 }

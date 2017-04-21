@@ -63,7 +63,8 @@ gulp.task('envf', function(){
 gulp.task('dev', function() {
     nodemon({
       script: 'udpIPv6.js'
+      // script: 'teste.js'
     });
 });
 
-gulp.task('default', ['lint','watch','envf','dev']);
+gulp.task('default', ['watch','envf','dev']);

@@ -30,6 +30,7 @@ module.exports = mongoose.model('Sensor6LoWPAN', new Schema({
     bat: [dataValue],
     temp: [dataValue],
     rssi: [dataValue],
+    rota: [dataValue],
     createdAt: {
         type: Date,
         default: Date.now
